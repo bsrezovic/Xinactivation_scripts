@@ -1,0 +1,303 @@
+---
+title: "New_scrnas"
+output: pdf_document
+---
+THe necessary packages
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(Rsubread) #for feature counting, count matrix creation
+library(SingleCellExperiment)
+library(data.table)
+library(org.Hs.eg.db)
+library(annotate) #for the gene ids
+library(biomaRt)
+library(scRNAseq)
+library(scater)
+library(scran)
+library(bluster)
+library(AllelicImbalance)
+library(XCIR)
+library(DESeq2)
+library(reshape2)
+library(dplyr)
+library(scds)
+library(edgeR) #used for attached package limma
+library(rsvd)
+library(Rtsne)
+library(cowplot)
+```
+## Data loading
+
+```{r cars}
+#the datasets donor/IPAH
+test <- c("W11","W117","W87","W99","W43","W103","W232p2","W159p2","W196p2","W330p2")
+control <- c("W193D","W37D","W60D","W175D","W116D","W44D2","W300Dp2","W336Dp2","W404Dp2","W327Dp2")
+
+#Helper function for prettying up the cell names;
+#differs from previous samples
+cell_trimm <- function(x){
+  print
+  return(substr(x,17, (nchar(x)-11)))
+}
+#load all the datasets
+
+# these are tables of feature counts resulting from running "counts_matrix.R". 
+# csv files where the first column are gene identifiers and the rest are counts of the gene in each cell
+#       for a given sample
+w_2_103 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W103_counts_matrix_new", row.names = 1)
+w_2_11 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W11_counts_matrix_new", row.names = 1)
+w_2_37D <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W37D_counts_matrix_new", row.names = 1)
+w_2_43 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W43_counts_matrix_new", row.names = 1)
+w_2_44D2 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W44D2_counts_matrix_new", row.names = 1)
+w_2_60D <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W60D_counts_matrix_new", row.names = 1)
+w_2_87 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W87_counts_matrix_new", row.names = 1)
+w_2_99 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W99_counts_matrix_new", row.names = 1)
+w_2_116D <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W116D_counts_matrix_new", row.names = 1)
+w_2_117 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W117_counts_matrix_new", row.names = 1)
+w_2_175D <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W175D_counts_matrix_new", row.names = 1)
+w_2_193D <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W193D_counts_matrix_new", row.names = 1)
+
+# batch 2 
+w_300 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W300_counts_matrix_new", row.names = 1)
+w_336 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W336_counts_matrix_new", row.names = 1)
+w_330 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W330_counts_matrix_new", row.names = 1)
+w_404 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W404_counts_matrix_new", row.names = 1)
+w_196 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W196_counts_matrix_new", row.names = 1)
+w_327 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W327_counts_matrix_new", row.names = 1)
+w_232 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W232_counts_matrix_new", row.names = 1)
+w_159 <- read.csv("C:/Users/38598/Desktop/Xci/reports/batch2_features/W159_counts_matrix_new", row.names = 1)
+
+#applaying the renaming function to make the cell names more easily readable
+colnames(w_2_103) <- sapply(colnames(w_2_103), cell_trimm)
+colnames(w_2_11) <- sapply(colnames(w_2_11), cell_trimm)
+colnames(w_2_37D) <- sapply(colnames(w_2_37D), cell_trimm)
+colnames(w_2_43) <- sapply(colnames(w_2_43), cell_trimm)
+colnames(w_2_44D2) <- sapply(colnames(w_2_44D2), cell_trimm)
+colnames(w_2_60D) <- sapply(colnames(w_2_60D), cell_trimm)
+colnames(w_2_87) <- sapply(colnames(w_2_87), cell_trimm)
+colnames(w_2_99) <- sapply(colnames(w_2_99), cell_trimm)
+colnames(w_2_116D) <- sapply(colnames(w_2_116D), cell_trimm)
+colnames(w_2_117) <- sapply(colnames(w_2_117), cell_trimm)
+colnames(w_2_175D) <- sapply(colnames(w_2_175D), cell_trimm)
+colnames(w_2_193D) <- sapply(colnames(w_2_193D), cell_trimm)
+# same for batch 2
+colnames(w_300) <- sapply(colnames(w_300), cell_trimm)
+colnames(w_327) <- sapply(colnames(w_327), cell_trimm)
+colnames(w_336) <- sapply(colnames(w_336), cell_trimm)
+colnames(w_232) <- sapply(colnames(w_232), cell_trimm)
+colnames(w_404) <- sapply(colnames(w_404), cell_trimm)
+colnames(w_196) <- sapply(colnames(w_196), cell_trimm)
+colnames(w_159) <- sapply(colnames(w_159), cell_trimm)
+colnames(w_330) <- sapply(colnames(w_330), cell_trimm)
+# concatenate the 2 batches for further analysis
+experiment1 <- cbind(w_2_103,w_2_11,w_2_37D,w_2_43,w_2_44D2,w_2_60D,w_2_87,w_2_99,w_2_116D,w_2_117,w_2_175D, w_2_193D)
+experiment2 <- cbind(w_330,w_300,w_327,w_336,w_404,w_232,w_196,w_159)
+
+#Prepare a data frame that will eventually become the SingelCellExperiment colData object
+cdata1 <- data.frame(cell_names=colnames(experiment1))
+cdata2 <- data.frame(cell_names=colnames(experiment2))
+cdata1$patient <- sub("_[^_]+$", "",cdata1$cell_names)
+cdata2$patient <- sub("_[^_]+$", "",cdata2$cell_names)
+
+#Add the donor vs IPAH info
+cdata1$type <- ""    
+cdata1[cdata1$patient%in%control,]$type <- "control"
+cdata1[cdata1$patient%in%test,]$type <- "test"
+cdata2$type <- ""    
+cdata2[cdata2$patient%in%control,]$type <- "control"
+cdata2[cdata2$patient%in%test,]$type <- "test"
+
+#Turning the geneIDs to gene names using a helper fucntion
+anot <- as.data.table(toTable(org.Hs.egCHR))
+setnames(anot, "gene_id", "id")
+chr_anot <- function(x){
+  return(anot[id==x, chromosome])
+}
+chr_name1 <- sapply(rownames(experiment1), chr_anot) 
+chr_name2 <- sapply(rownames(experiment2), chr_anot) 
+
+chr1 <- as.data.frame(data.table(chr_name1))
+chr2 <- as.data.frame(data.table(chr_name2))
+
+
+gene_name1 <- sapply(rownames(experiment1), lookUp,'org.Hs.eg', "SYMBOL")
+gene_name2 <- sapply(rownames(experiment2), lookUp,'org.Hs.eg', "SYMBOL")
+
+
+#addding this in for the cell cylce classifier (the references are all just annotated in ensembl and its a pain to translate those because theyre nested lists)
+ensembl_name1 <- sapply(rownames(experiment1), lookUp,'org.Hs.eg', "ENSEMBL")
+ensembl_name2 <- sapply(rownames(experiment2), lookUp,'org.Hs.eg', "ENSEMBL")
+```
+
+Warning: There was a change in how Mitochondrial genes are named in all of these databases, they now omit the "Mt-" part of the name, making some of these workflows and functions incorrectly result in no Mt genes detected: fixing below by using a list of mt gene names, including non protein coding ones just in case
+
+```{r}
+mito_genes <- c("ATP6","ATP8","CYB","ND4L",
+                "ND1","ND2","ND3","ND4",
+                "ND5","ND6","RNR1","RNR2",
+                "TD","TE","TF","TG","TH",
+                "TI","TK","TL1","TL2","TM",
+                "TN","TP","TQ","TR","TS1",
+                "TS2","TV","TW","TY")
+```
+
+
+using the single cell experiment class
+
+```{r}
+sce1 <- SingleCellExperiment(assays=list(counts = experiment1), colData = cdata)
+sce2 <- SingleCellExperiment(assays=list(counts = experiment2), colData = cdata)
+rowData(sce1)$chr <- chr_name1 #added chromosome names to the single cell experiment
+rowData(sce2)$chr <- chr_name2 #added chromosome names to the single cell experiment
+
+#add the rownmes as a geneID column 
+rowData(sce1)$geneid <- rownames(sce1)
+rowData(sce2)$geneid <- rownames(sce2)
+
+rowData(sce1)$Symbol <- gene_name1
+rowData(sce2)$Symbol <- gene_name2
+#addin the ensemble names
+rowData(sce1)$Ensembl <- ensembl_name1
+rowData(sce2)$Ensembl <- ensembl_name2
+
+rownames(sce1) <- gene_name1
+rownames(sce2) <- gene_name2
+#what we have:
+head(rowData(sce1))
+head(colData(sce1))
+head(rowData(sce2))
+head(colData(sce2))
+
+```
+
+
+Implementing the extra quality controll
+ Quality control filtered out cells with >5% mitochondrial genes and either very low (<200) or very high (3 times the median absolute deviation of genes) number of genes.
+
+```{r}
+sceqc <- sce1  #chose which of the two sce object to filter, rerun with either one
+#sceqc <-  sce2
+
+
+is.mito <- rowData(sceqc)$Symbol%in%mito_genes
+stats <- perCellQCMetrics(sceqc, subsets=list(Mito=is.mito), threshold=5) #Can vary the threshold at which the gene is considered to be detected
+
+
+#this command would announce 46 cells to be outliers based on MT content, while 5% threshold would do so for 48 of them
+high.mito <- isOutlier(stats$subsets_Mito_percent, type="higher")
+sum(high.mito)
+sum(stats$subsets_Mito_percent>5)
+
+
+
+colData(sceqc) <- cbind(colData(sceqc), stats)
+sceqc$high_mito <- high.mito
+sceqc$five_percent_mito <- stats$subsets_Mito_percent>5
+
+#Plot of removed cells based on outlier function
+plotColData(sceqc, x="sum", y="subsets_Mito_percent",
+        colour_by="high_mito") + scale_x_log10()
+#plot based on 5% threshold
+plotColData(sceqc, x="detected", y="subsets_Mito_percent",
+        colour_by="five_percent_mito") + scale_x_log10() +xlab("Number of detected features")+ylab("% counts belongiing to mitochondrial genes")  + guides(fill=guide_legend(title="New Legend Title"))
+
+#Same plot but colored by patient and plate for reference
+plotColData(sceqc, x="sum", y="subsets_Mito_percent",
+        colour_by="patient") + scale_x_log10()
+plotColData(sceqc, x="sum", y="subsets_Mito_percent",
+        colour_by="plate") + scale_x_log10()
+#frequency distribution of cells to be removed based on threshold and patient
+table(sceqc[,sceqc$five_percent_mito]$patient)
+#dont see any obvious problems there, nothing stands out
+
+# discard based on 5% threshold
+discarded <- sceqc[,sceqc$five_percent_mito] 
+sceqc <- sceqc[,!sceqc$five_percent_mito] #remove the cells with mito content abov 5%, theres 48 of them
+
+```
+
+Filtering by counts being too high or too low as well
+
+```{r}
+#1. very low == less than 200
+sum(stats$detected<200)  #there are none such in the data
+
+#2. very high == (3 times the median absolute deviation of genes
+
+m <- mad(stats$detected)
+sum(stats$detected>(3*m))
+
+
+stats$mad <- abs(stats$detected-median(stats$detected))
+stats$mad_over_3 <- stats$detected>(3*m)
+stats$mad_over_3_b <- stats$detected>(median(stats$detected)+(3*m))
+colData(sceqc) <- cbind(colData(sceqc), stats)
+plotColData(sceqc, x="detected", y="mad",
+        colour_by="mad_over_3") + scale_x_log10()
+
+plotColData(sceqc, x="detected", y="mad",
+        colour_by="mad") + scale_x_log10()
+
+
+plotColData(sceqc, x="detected", y="subsets_Mito_percent",
+        colour_by="mad_over_3") + scale_x_log10()+xlab("Number of detected features")+ylab("% counts belonging to mitochondrial genes")
+
+
+
+plotColData(sceqc, x="detected", y="sum",
+        colour_by="mad_over_3_b") + scale_x_log10()+xlab("Number of detected features")+ylab("read count")
+
+# nothing to filter here 
+
+```
+
+Normalization and clustering 
+
+```{r}
+#this automatically calculates library size factors using default values of the "normalizeCOunts" function
+#the size factors are saved in the sce object metadata
+
+sceqc <- scuttle::logNormCounts(sceqc)
+
+set.seed(94)
+
+sceqc <- runUMAP(sceqc, scale=T, ntop =500)
+
+plotUMAP(sceqc,colour_by=I(sceqc$type), ncomponents = 2)
+plotUMAP(sceqc,colour_by=I(sceqc$patient), ncomponents = 2)
+plotUMAP(sceqc,colour_by=I(sceqc$plate), ncomponents = 2,shape_by=I(sceqc$type))
+
+
+```
+Analyzing UMAPS, top variance genes, get fold changes
+
+```{r}
+a1 <- getTopHVGs(sceqc)
+a2 <- getTopHVGs(sceqc, row.names = F) 
+
+hvg_table <- rowData(sceqc[a2[1:500],])
+
+colLabels(sceqc) <- clusterCells(sceqc, use.dimred='UMAP',  BLUSPARAM=KmeansParam(centers=4) )
+plotUMAP(sceqc,colour_by="label", ncomponents = 2, text_by="label")
+
+#this defines the clusters themselves
+#this command retuns a list of dataframes
+markers <- findMarkers(sceqc,test.type = "wilcox",pval.type = "all")#grouping defaults to collabels, 
+
+markers2 <- findMarkers(sceqc,test.type = "t", pval.type = "all")
+markers3 <- findMarkers(sceqc,test.type = "t", pval.type = "any")
+
+
+#now lets try to do the same for control - test on all clusters together, and later per cluster!
+
+markers_test <- findMarkers(sceqc, groups = sceqc$type, test.type = "wilcox", pval.type="all")
+markers_test$test
+
+
+#doing stuff for each cluster as Alicja wanted
+markers_test <- findMarkers(sceqc[,colLabels(sceqc)==4], groups = sceqc[,colLabels(sceqc)==4]$type, test.type = "wilcox",pval.type = "all")
+markers_test$test
+
+write.csv(hvg_table,"C:/Users/38598/Desktop/hvg_top500.csv")
+```

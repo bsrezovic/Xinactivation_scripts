@@ -1,0 +1,507 @@
+---
+title: "Imbalance_analysis_example"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(data.table)
+library(dplyr)
+library(org.Hs.eg.db)
+library(GenomicRanges)
+library(biomaRt)
+library(AllelicImbalance)
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+library(reshape)
+library(tidyr)
+
+library(vcfR)
+
+```
+
+
+
+```{r, include=FALSE}
+
+getGenesFromAnnotation_inhouse <- function (OrgDb, GR, leftFlank = 0, rightFlank = 0, getUCSC = FALSE, 
+    verbose = FALSE) 
+{
+    if (class(OrgDb)[1] != "OrgDb") 
+        stop(paste("OrgDb must of class OrgDb, not", class(OrgDb)[1]))
+    if (class(GR)[1] != "GRanges") 
+        stop(paste("GR must of class GRanges, not", class(GR)[1]))
+    if (!class(leftFlank)[1] %in% c("numeric")) 
+        stop(paste("leftFlank must be of class numeric, not:", 
+            class(leftFlank)[1]))
+    if (length(leftFlank) != 1) 
+        stop(paste("leftFlank must be of length 1, not:", 
+            length(leftFlank)))
+    if (leftFlank < 0) 
+        stop(paste("leftFlank must be equal to or larger than 0"))
+    if (!class(rightFlank)[1] %in% c("numeric")) 
+        stop(paste("rightFlank must be of class numeric, not:", 
+            class(rightFlank)[1]))
+    if (length(rightFlank) != 1) 
+        stop(paste("rightFlank must be of length 1, not:", 
+            length(rightFlank)))
+    if (rightFlank < 0) 
+        stop(paste("rightFlank must be equal to or larger than 0"))
+    if (!class(getUCSC)[1] %in% c("logical")) 
+        stop(paste("getUCSC must be of class logical, not:", 
+            class(getUCSC)[1]))
+    if (length(getUCSC) != 1) 
+        stop(paste("getUCSC must be of length 1, not:", 
+            length(getUCSC)))
+    if (!"UCSCKG" %in% columns(OrgDb)) {
+        if (verbose) 
+            message("Unable to retrieve UCSCKG column from OrgDb. Omitting")
+        getUCSC <- FALSE
+    }
+    if (!class(verbose)[1] %in% c("logical")) 
+        stop(paste("verbose must be of class logical, not:", 
+            class(verbose)[1]))
+    if (length(verbose) != 1) 
+        stop(paste("verbose must be of length 1, not:", 
+            length(verbose)))
+    seqLevels <- sub("^chr", "", seqlevels(GR))
+    seqlevels(GR) <- seqLevels
+    startFilter <- max(c(1, start(range(GR)) - 10^6))
+    endFilter <- end(range(GR)) + 10^6
+    colsFilter <- c("CHR", "CHRLOC", "CHRLOCEND", 
+        "SYMBOL")
+    sFilter <- suppressWarnings(AnnotationDbi::select(OrgDb, keys = seqLevels, 
+        columns = colsFilter, keytype = "CHR"))
+    symbolsToGet <- sFilter[abs(sFilter[, "CHRLOC"]) > 
+        startFilter & abs(sFilter[, "CHRLOCEND"]) < endFilter & 
+        !is.na(sFilter[, "CHRLOCEND"]) & !is.na(sFilter[, 
+        "CHRLOC"]), "SYMBOL"]
+    if (getUCSC) {
+        cols <- c("SYMBOL", "CHR", "CHRLOC", 
+            "CHRLOCEND", "ENSEMBL", "UCSCKG")
+    }else {
+        cols <- c("SYMBOL", "CHR", "CHRLOC", 
+            "CHRLOCEND", "ENSEMBL")
+    }
+    s <- suppressWarnings(AnnotationDbi::select(OrgDb, keys = symbolsToGet, 
+        columns = cols, keytype = "SYMBOL"))
+    TFminusStrand <- s[["CHRLOC"]] < 0
+    TFplusStrand <- s[["CHRLOC"]] > 0
+    sNoNas <- s[c(which(TFminusStrand), which(TFplusStrand)), 
+        ]
+    TFminusStrand2 <- sNoNas[["CHRLOC"]] < 0
+    strand <- rep("+", length = (dim(sNoNas)[1]))
+    strand[TFminusStrand2] <- "-"
+    sNonNegative <- sNoNas
+    sNonNegative[TFminusStrand2, c("CHRLOC", "CHRLOCEND")] <- -sNonNegative[TFminusStrand2, 
+        c("CHRLOC", "CHRLOCEND")]
+    start <- sNonNegative[["CHRLOC"]]
+    end <- sNonNegative[["CHRLOCEND"]]
+    seqnames <- sNonNegative[["CHR"]]
+    if (getUCSC) {
+        annGR <- GRanges(seqnames = Rle(seqnames), ranges = IRanges(start, 
+            end), strand = Rle(strand), Symbol = sNonNegative[["SYMBOL"]], 
+            Ensembl = sNonNegative[["ENSEMBL"]], UCSCKG = sNonNegative[["UCSCKG"]])
+    }else {
+        annGR <- GRanges(seqnames = Rle(seqnames), ranges = IRanges(start, 
+            end), strand = Rle(strand), Symbol = sNonNegative[["SYMBOL"]], 
+            Ensembl = sNonNegative[["ENSEMBL"]])
+    }
+    if (sum(!levels(seqnames(GR)) %in% levels(seqnames(annGR))) > 
+        0) {
+        TFkeepLevels <- levels(seqnames(GR)) %in% levels(seqnames(annGR))
+        seqlevels(GR, pruning.mode = "coarse") <- seqlevels(annGR)
+    }
+    if (sum(!levels(seqnames(annGR)) %in% levels(seqnames(GR))) > 
+        0) {
+        TFkeepLevels <- levels(seqnames(annGR)) %in% levels(seqnames(GR))
+        seqlevels(annGR, pruning.mode = "coarse") <- seqlevels(annGR)[TFkeepLevels]
+    }
+    seqlevels(GR, pruning.mode="coarse") <-  seqlevels(annGR)
+    GenesInRegion <- subsetByOverlaps(annGR, GR)
+    seqlengths(GenesInRegion) <- seqlengths(GR)
+    GenesInRegion
+}
+
+getGenesVector_inhouse <- function (OrgDb, GR, leftFlank = 0, rightFlank = 0, verbose = FALSE) 
+{
+    if (verbose) {
+        cat("start gene extraction\n")
+    }
+    GenesInRegion <- getGenesFromAnnotation_inhouse(OrgDb, GR, leftFlank = leftFlank, 
+        rightFlank = rightFlank, verbose = FALSE)
+    seqLevels <- sub("^chr", "", seqlevels(GR))
+    seqlevels(GR) <- seqLevels 
+    seqlevels(GR, pruning.mode="coarse") <- seqlevels(GenesInRegion)
+    symbolList <- unique(mcols(GenesInRegion)[["Symbol"]])
+    newGenesInRegion <- GRanges()
+    if (!length(GenesInRegion) == 0) {
+        for (i in 1:length(symbolList)) {
+            symbol <- symbolList[i]
+            TF <- mcols(GenesInRegion)[["Symbol"]] == symbol
+            G <- GRanges(seqnames = unique(seqnames(GenesInRegion[TF])), 
+                ranges = IRanges(min(start(GenesInRegion[TF])), 
+                  max(end(GenesInRegion[TF]))), strand = unique(strand(GenesInRegion[TF])))
+            mcols(G) <- unique(mcols(GenesInRegion[TF])[, "Symbol", 
+                drop = FALSE])
+            newGenesInRegion <- c(newGenesInRegion, G)
+        }
+    }
+    h <- findOverlaps(newGenesInRegion, GR)
+    symbolVec <- vector()
+    for (i in 1:length(GR)) {
+        symbolVec[i] <- paste(mcols(newGenesInRegion[queryHits(h)[subjectHits(h) == 
+            i]])[["Symbol"]], collapse = ",")
+    }
+    symbolVec[symbolVec == ""] <- NA
+    symbolVec
+    symbolVec
+}
+```
+
+```{r, include=FALSE}
+
+Abalancer <- function(data, rt1 = 20, Par = FALSE,discard=c()){
+  data <- data[data$chr=="chrX"]
+  snppos <- which(colnames(data)=="snpcounts_1")
+
+  cellpos <- which(colnames(data)=="cell_1")
+
+  ncell <- ncol(data)-6
+  
+  x = cellpos
+  y  =cellpos - 1
+  
+  
+
+  
+  if (length(discard)>0){
+    data <- as.data.frame(data)
+
+    cellnames <- paste0("cell_",1:(ncol(data)-6)) 
+    diffy <- setdiff(cellnames,discard$newname)
+    data[,diffy] <- NA
+    data <- as.data.table(data)
+    
+  }
+  
+ 
+  
+  naming <- GRanges(seqnames = data$chr, ranges = IRanges(start = as.numeric(data$pos), end = as.numeric(data$pos)+1))
+  
+
+  par1 <- GRanges(seqnames = "chrX",IRanges(start = 10001, end = 2781479))
+  par2 <- GRanges(seqnames = "chrX",IRanges(start = 155701383, end = 156030895))
+  par <- c(par1,par2)
+
+  overs <- findOverlaps(naming,par)
+
+  data$par <- "notPar"
+  data[queryHits(overs),]$par <- "Par"
+  if (!Par & length(overs)>0){
+    naming <- naming[-queryHits(overs)]
+    data <- data[-queryHits(overs),]
+  }
+
+  
+  symbols <- getGenesVector_inhouse(OrgDb=org.Hs.eg.db,naming, leftFlank = 0, rightFlank = 0, verbose = T)
+  r <- c(x:(ncell+y),ncol(data))
+  cells <- data[,..r]
+  snpcounts <- data[,(ncell+x):(ncol(data)-1)]
+  cells$gene_name <- symbols
+  snpcounts$gene_name <- symbols
+  cells <- cells[!is.na(gene_name)]
+  snpcounts <- snpcounts[!is.na(gene_name)]
+  
+  melted_cells <- as.data.table(melt(cells))
+  melted_snp <- melt(snpcounts)
+  
+  melted_cells[melted_snp$value<rt1,]$value <- NA 
+  melted_cells <- as.data.frame(melted_cells)
+
+  cells <- as.data.table(cast(melted_cells, gene_name + par ~ variable, fun.aggregate = mean))
+  
+
+  return(cells)
+}
+
+```
+
+Read in lists of variants from whole exome data
+```{r}
+symbols60D <- read.csv("symbolsW60D.csv")
+symbols37D <- read.csv("symbolsW37D.csv")
+symbols43 <- read.csv("symbolsW43.csv")
+symbols99 <- read.csv("symbolsW99.csv")
+symbols116D <- read.csv("symbolsW116D.csv")
+symbols193D <- read.csv("symbolsW193D.csv")
+symbols11 <- read.csv("symbolsW11.csv")
+symbols117<- read.csv("symbolsW117.csv")
+```
+
+Plotting/escape determination function that takes the output of the "Abalancer" function
+and either plots graphs our ouputs different types of escapee lists.
+
+```{r setup, include=FALSE}
+
+
+
+plot_escape <- function(data,snpvec=c(),
+                        ct=5,all = F,flip05 = T, 
+                        title = "Unknown", print = F, print2 = F, par=F){
+
+
+  j=2
+  if(!par){
+    
+    j=1
+  }
+  data$par <- NULL
+  cellcount <- ncol(data)-j 
+
+
+
+  if(flip05){
+    melted <- melt(data)
+    oppo <- melted$value<0.5
+    oppo[is.na(oppo)] <- FALSE
+    melted[oppo,]$value <- 1 - melted[oppo,]$value 
+
+    data<- as.data.table(dcast(melted, gene_name ~ variable, fun.aggregate = mean))
+    #print(data)
+  }
+  
+
+  data[,aggregateAR:=rowMeans(data[,-(1:j)],na.rm = TRUE)]
+  
+  escapees <- data[aggregateAR<=0.95,]
+  
+  
+ 
+  escapees <- data.table(separate_rows(escapees, gene_name))
+  escapees <- escapees %>% 
+    group_by(gene_name) %>% 
+    summarise(across(everything(), ~ ifelse(all(is.na(.x)), NA, max(.x, na.rm = T))))
+  escapees <- as.data.table(escapees)
+  escapees <- escapees[rowSums(!is.na(escapees[,2:(cellcount+1)]))>=ct]
+  if (nrow(snpvec)>0){
+    escapees <- escapees[gene_name %in% snpvec$x]
+  }
+  if(print2){
+    ccounts <- rowSums(escapees<=0.95,na.rm =T )-1 
+    ccounts2 <- rowSums(escapees<=999,na.rm =T )-1 
+    result <- data.table(name=escapees$gene_name, cell_number_escaping=ccounts,cell_number_total=ccounts2)
+    return(result)
+  }
+
+  if(print){
+    return(unique(escapees$gene_name))
+  }
+
+  if (nrow(escapees)==0){
+  ggplot() + theme_void()
+  break
+  }
+
+  if (!all){
+  table_plot2 <- melt(escapees, id.vars = "gene_name")
+  table_plot2 <- table_plot2[table_plot2$variable!="aggregateAR",]
+  }else{
+  table_plot2 <- melt(data[,1:(ncol(data)-1)], id.vars = c("gene_name"))
+  table_plot2 <- table_plot2[table_plot2$variable!="aggregateAR",]
+  }
+
+  if(par){
+    table_plot2 <- melt(escapees, id.vars = c("gene_name","par"))
+    table_plot2 <- table_plot2[table_plot2$variable!="aggregateAR",]
+    
+    ggplot(table_plot2, aes(y=gene_name,x=value, color = par))+ 
+    theme(axis.text.x = element_text(angle = 0, hjust = 1),
+          text = element_text(size=9)) +
+    xlab("Allelic ratio") + ggtitle(title) + 
+    scale_y_discrete(guide = guide_axis(n.dodge=2))+
+    geom_jitter(show.legend = FALSE)
+  }else{
+    ggplot(table_plot2, aes(y=gene_name,x=value, color = gene_name))+ 
+    theme(axis.text.x = element_text(angle = 0, hjust = 1),
+          text = element_text(size=9)) +
+    xlab("Allelic ratio") + ggtitle(title) + 
+    scale_y_discrete(guide = guide_axis(n.dodge=2))+
+    geom_jitter(show.legend = FALSE)
+  }
+
+}
+
+
+```
+Load data, apply abalancer
+
+```{r}
+
+W43<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW43_combined.csv"))
+W11<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW11_combined.csv"))
+W99<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW99_combined.csv"))
+W193D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW193D_combined.csv"))
+W116D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW116D_combined.csv"))
+W60D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW60D_combined.csv"))
+W37D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW37D_combined.csv"))
+W117<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/subjunc/tableW117_combined.csv"))
+
+
+mito_discard <- as.data.table(read.csv("C:/Users/38598/Desktop/Xci/X_ci/ayu_discard_v3.csv"))
+snpthreshold = 5
+
+W117 <- Abalancer(W117,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W117"])
+W116D <- Abalancer(W116D,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W116D"])
+W193D <- Abalancer(W193D,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W193D"])
+W11 <- Abalancer(W11,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W11"])
+W60D <- Abalancer(W60D,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W60D"])
+W37D <- Abalancer(W37D,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W37D"])
+W43 <- Abalancer(W43,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W43"])
+W99 <- Abalancer(W99,rt1 = snpthreshold,discard=mito_discard[patient_ID=="W99"])
+
+
+```
+
+
+Print the graphs/ouptu the escape numbers
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+threshold  = 5
+p1 <- plot_escape(W99 ,ct = threshold, snpvec = symbols99, title = "w99")
+p2 <- plot_escape(W11,ct = threshold, snpvec = symbols11, title = "w11")
+p3 <- plot_escape(W43,ct = threshold, snpvec = symbols43, title = "W43")
+p4 <- plot_escape(W117,ct = threshold, snpvec = symbols117, title = "w117")
+
+
+
+p9 <- plot_escape(W193D,ct = threshold, snpvec = symbols193D, title = "w193D")
+p10 <- plot_escape(W37D,ct = threshold, snpvec = symbols37D, title = "W37D")
+p11<- plot_escape(W116D,ct = threshold, snpvec = symbols116D, title = "w116D")
+p12<- plot_escape(W60D,ct = threshold, snpvec = symbols60D, title = "w60D")
+pdf("Batch1_graphs.pdf", height=6, width=8)
+p1
+p2
+p3
+p4
+p9
+p10
+p11
+p12
+dev.off()
+
+
+a1 <- plot_escape(W99 ,ct = threshold, snpvec = symbols99, title = "w99", print2=T)
+a2 <- plot_escape(W11,ct = threshold, snpvec = symbols11, title = "w11", print2=T, par = F)
+a3 <- plot_escape(W43,ct = threshold, snpvec = symbols43, title = "W43", print2=T)
+a4 <- plot_escape(W117,ct = threshold, snpvec = symbols117, title = "w117", print2=T)
+a9 <- plot_escape(W193D,ct = threshold, snpvec = symbols193D, title = "w193D", print2=T)
+a10 <- plot_escape(W37D,ct = threshold, snpvec = symbols37D, title = "W37D", print2=T)
+a11<- plot_escape(W116D,ct = threshold, snpvec = symbols116D, title = "w116D", print2=T)
+a12<- plot_escape(W60D,ct = threshold, snpvec = symbols60D, title = "w60D", print2=T)
+
+df1 <- rbind(a1,a2,a3,a4,a9,a10,a11,a12)
+
+
+write.csv(a1,"C:/Users/38598/Desktop/c5/w99.csv")
+write.csv(a2,"C:/Users/38598/Desktop/c5/w11.csv")
+write.csv(a3,"C:/Users/38598/Desktop/c5/w43.csv")
+write.csv(a4,"C:/Users/38598/Desktop/c5/w117.csv")
+write.csv(a9,"C:/Users/38598/Desktop/c5/w193D.csv")
+write.csv(a10,"C:/Users/38598/Desktop/c5/w37D.csv")
+write.csv(a11,"C:/Users/38598/Desktop/c5/w116D.csv")
+write.csv(a12,"C:/Users/38598/Desktop/c5/w60D.csv")
+
+```
+
+New exome load
+
+```{r}
+
+
+symbols404D <- read.csv("symbols404D.csv")
+symbols336D <- read.csv("symbols336D.csv")
+symbols327D <- read.csv("symbols327D.csv")
+symbols300D <- read.csv("symbols300D.csv")
+symbols330 <- read.csv("symbols330.csv")
+symbols232 <- read.csv("symbols232.csv")
+symbols196 <- read.csv("symbols196.csv")
+symbols159 <- read.csv("symbols159.csv")
+```
+
+
+Newest scrna data
+
+```{r}
+W159<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W159.csv"))
+W196<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W196.csv"))
+W232<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W232.csv"))
+W300D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W300.csv"))
+W327D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W327.csv"))
+W330<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W330.csv"))
+W404D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W404.csv"))
+W336D<- data.table(read.csv( "C:/Users/38598/Desktop/Xci/reports/new_scrna/W336.csv"))
+
+
+snpthreshold = 5
+discard2 <- as.data.table(read.csv("C:/Users/38598/Desktop/Xci/X_ci/ayu_discard_v3.csv"))
+
+W159 <- Abalancer(W159,rt1 = snpthreshold,discard=discard2[patient_ID=="W159p2"])
+W196 <- Abalancer(W196,rt1 = snpthreshold,discard=discard2[patient_ID=="W196p2"])
+W232 <- Abalancer(W232,rt1 = snpthreshold,discard=discard2[patient_ID=="W232p2"])
+W300D <- Abalancer(W300D,rt1 = snpthreshold,discard=discard2[patient_ID=="W300Dp2"])
+W327D <- Abalancer(W327D,rt1 = snpthreshold,discard=discard2[patient_ID=="W327Dp2"])
+W330 <- Abalancer(W330,rt1 = snpthreshold,discard=discard2[patient_ID=="W330p2"])
+W404D <- Abalancer(W404D,rt1 = snpthreshold,discard=discard2[patient_ID=="W404Dp2"])
+W336D <- Abalancer(W336D,rt1 = snpthreshold,discard=discard2[patient_ID=="W336Dp2"])
+```
+
+```{r}
+threshold  = 5
+p1 <- plot_escape(W159 ,ct = threshold, title = "w159",snpvec = symbols159)
+p2 <- plot_escape(W196, ct = threshold, title = "w196",snpvec=symbols196  )
+p3 <- plot_escape(W232, ct = threshold, title = "W232",snpvec=symbols232  )
+p4 <- plot_escape(W330, ct = threshold, title = "w330",snpvec=symbols330  )
+p9 <- plot_escape(W300D,ct = threshold, title = "w300D",snpvec=symbols300D  )
+p10 <- plot_escape(W327D,ct = threshold, title = "W327D",snpvec=symbols327D  )
+p11<- plot_escape(W404D,ct = threshold, title = "w404D",snpvec=symbols404D  )
+p12<- plot_escape(W336D,ct = threshold, title = "w336D",snpvec=symbols336D  )
+pdf("Batch2_graphs.pdf", height=6, width=8)
+p1
+p2
+p3
+p4
+p9
+p10
+p11
+p12
+dev.off()
+# Also print tables
+a1 <- plot_escape(W159 ,ct = threshold, snpvec = symbols159, title = "w159", print2=T)
+a2 <- plot_escape(W196,ct = threshold, snpvec = symbols196, title = "w196", print2=T)
+a3 <- plot_escape(W232,ct = threshold, snpvec = symbols232, title = "W232", print2=T)
+a4 <- plot_escape(W330,ct = threshold, snpvec = symbols330, title = "w330", print2=T)
+a9 <- plot_escape(W300D,ct = threshold, snpvec = symbols300D, title = "w300D", print2=T)
+a10 <- plot_escape(W327D,ct = threshold, snpvec = symbols327D, title = "W327D", print2=T)
+a11<- plot_escape(W404D,ct = threshold, snpvec = symbols404D, title = "w404D", print2=T)
+a12<- plot_escape(W336D,ct = threshold, snpvec = symbols336D, title = "w336D", print2=T)
+
+
+
+
+write.csv(a1,"C:/Users/38598/Desktop/c5/w159.csv")
+write.csv(a2,"C:/Users/38598/Desktop/c5/w196.csv")
+write.csv(a3,"C:/Users/38598/Desktop/c5/w232.csv")
+write.csv(a4,"C:/Users/38598/Desktop/c5/w330.csv")
+write.csv(a9,"C:/Users/38598/Desktop/c5/w300D.csv")
+write.csv(a10,"C:/Users/38598/Desktop/c5/w327D.csv")
+write.csv(a11,"C:/Users/38598/Desktop/c5/w404D.csv")
+write.csv(a12,"C:/Users/38598/Desktop/c5/w336D.csv")
+
+
+
+```
+
+
+
+  
