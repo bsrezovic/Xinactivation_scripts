@@ -24,6 +24,7 @@ Procedures by files in order:
 		 table format
 	Imbalance_analysis.Rmd
 		Inputs are the tables from new_imbalance.R
+ 			Additional filtering done using scRNA data explained below under "Analysis_scRNA"
 		outputs are graphs and lists of escapee genes
 
 2. For single cell RNA analysis
@@ -33,5 +34,7 @@ Procedures by files in order:
 	Analysis_scRNA.Rmd
 		Inputs are the matrices of counts
 		Creates SingleCellExperiment objects
+                        An unfiltered verion of this object was sent to Ayu Hutami Syarif
+			 for filtering and the results used in Imbalance_analysis.Rmd
 		Filtering for mitochondrial genes etc., other quality controls
 		UMAPS and other graphs
